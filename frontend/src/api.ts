@@ -14,8 +14,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const payload = (await response.json().catch(() => ({}))) as ErrorPayload
     throw new Error(payload.error?.message ?? 'A kérés sikertelen.')
   }
-  if (response.status === 204) return undefined as T
-  return response.json() as Promise<T>
+  if (response.status === 204 || response.status === 205) return undefined as T
+
+  const body = await response.text()
+  return (body ? JSON.parse(body) : undefined) as T
 }
 
 export const api = {
