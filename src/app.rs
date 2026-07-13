@@ -51,7 +51,7 @@ pub(crate) async fn build(config: &Config) -> Result<Router, Box<dyn std::error:
     Ok(api
         .fallback_service(
             ServeDir::new(&config.dist)
-                .not_found_service(ServeFile::new(format!("{}/index.html", config.dist))),
+                .fallback(ServeFile::new(format!("{}/index.html", config.dist))),
         )
         .layer(auth)
         .layer(RequestBodyLimitLayer::new(16_384))
