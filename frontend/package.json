@@ -1,0 +1,23 @@
+{
+  "name": "httpserver-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "check": "vue-tsc -b"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "latest",
+    "vue": "latest",
+    "vue-router": "latest"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "latest",
+    "tailwindcss": "latest",
+    "typescript": "~5.8.3",
+    "vite": "latest",
+    "vue-tsc": "latest"
+  }
+}
