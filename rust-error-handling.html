@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="hu">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rust hibakezelés – gyakorlati útmutató</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; line-height: 1.6; color: #172033; background: #f7f8fc; }
+    body { margin: 0; }
+    main { max-width: 900px; margin: 0 auto; padding: 3rem 1.25rem 5rem; }
+    article { background: #fff; border: 1px solid #e3e7ef; border-radius: 14px; padding: clamp(1.25rem, 4vw, 3rem); box-shadow: 0 3px 15px #18243a0c; }
+    h1, h2, h3 { line-height: 1.2; color: #111827; } h1 { font-size: 2.25rem; } h2 { margin-top: 2.5rem; border-bottom: 1px solid #e5e7eb; padding-bottom: .45rem; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #f1f5f9; padding: .1rem .3rem; border-radius: 4px; }
+    pre { background: #111827; color: #e5e7eb; padding: 1rem; overflow-x: auto; border-radius: 8px; } pre code { background: none; padding: 0; }
+    .note { border-left: 4px solid #2563eb; background: #eff6ff; padding: .8rem 1rem; border-radius: 0 8px 8px 0; }
+    .warning { border-left-color: #d97706; background: #fffbeb; }
+    table { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: .65rem; border-bottom: 1px solid #e5e7eb; }
+  </style>
+</head>
+<body>
+<main><article>
+  <h1>Rust hibakezelés</h1>
+  <p>Gyakorlati bevezető <code>Result</code>, <code>Option</code>, <code>?</code>, saját hibatípusok és Axum HTTP-válaszok használatához.</p>
+
+  <h2>1. A Rust nem exceptionökre épít</h2>
+  <p>A várható hibákat a függvény visszatérési értéke jelzi. Egy függvény nem „eldob” egy exceptiont, hanem <code>Err</code> értékkel tér vissza.</p>
+  <pre><code>fn parse_age(input: &amp;str) -&gt; Result&lt;u8, String&gt; {
+    input.parse().map_err(|_| "Érvénytelen életkor".into())
+}</code></pre>
+  <p>A hívó két esetet kezel:</p>
+  <pre><code>match parse_age("42") {
+    Ok(age) =&gt; println!("Életkor: {age}"),
+    Err(message) =&gt; println!("Hiba: {message}"),
+}</code></pre>
+
+  <h2>2. <code>Result&lt;T, E&gt;</code></h2>
+  <p>A <code>Result</code> vagy sikeres érték (<code>Ok(T)</code>), vagy hiba (<code>Err(E)</code>).</p>
+  <table>
+    <thead><tr><th>Változat</th><th>Jelentés</th></tr></thead>
+    <tbody>
+      <tr><td><code>Ok(value)</code></td><td>A művelet sikerült, az eredmény <code>value</code>.</td></tr>
+      <tr><td><code>Err(error)</code></td><td>A művelet nem sikerült, az ok <code>error</code>.</td></tr>
+    </tbody>
+  </table>
+  <pre><code>fn email_of(value: &amp;str) -&gt; Result&lt;String, ApiError&gt; {
+    let email = value.trim().to_lowercase();
+    if !email.contains('@') {
+        return Err(ApiError::Bad("Érvényes e-mail cím szükséges.".into()));
+    }
+    Ok(email)
+}</code></pre>
+
+  <h2>3. Mit csinál a <code>?</code> operátor?</h2>
+  <p>A <code>?</code> az előtte álló <code>Result</code> értékét kezeli:</p>
+  <ul>
+    <li><code>Ok(value)</code> esetén kibontja a <code>value</code>-t;</li>
+    <li><code>Err(error)</code> esetén <strong>azonnal visszatér</strong> az aktuális függvényből a hibával.</li>
+  </ul>
+  <pre><code>fn create(email_input: &amp;str) -&gt; Result&lt;String, ApiError&gt; {
+    let email = email_of(email_input)?;
+    // Ez a sor csak érvényes e-mailnél fut le.
+    Ok(email)
+}</code></pre>
+  <p>Ugyanez kézzel:</p>
+  <pre><code>fn create(email_input: &amp;str) -&gt; Result&lt;String, ApiError&gt; {
+    let email = match email_of(email_input) {
+        Ok(value) =&gt; value,
+        Err(error) =&gt; return Err(error),
+    };
+    Ok(email)
+}</code></pre>
+  <div class="note"><strong>Fontos:</strong> ez korai visszatérés, nem exception. A vezérlés nem „ugrik át” tetszőleges hívási szinteket; minden köztes függvénynek <code>Result</code>-ot kell visszaadnia és tovább kell adnia a hibát.</div>
+
+  <h2>4. A jelenlegi user-create folyamat</h2>
+  <pre><code>let result = users::insert(
+    &amp;state.db,
+    email_of(&amp;request.email)?,
+    name(request.display_name)?,
+    role(&amp;request.role)?,
+    request.is_active.unwrap_or(true),
+).await;</code></pre>
+  <p>A paraméterkifejezések kiértékelődnek. Bármelyik <code>?</code> hibánál azonnal kilép a <code>create</code> handlerből:</p>
+  <pre><code>Err(E::Bad(...))  →  create() visszaadja az Err-t
+                  →  Axum meghívja az E::into_response()-t
+                  →  HTTP 400 + JSON hibaválasz</code></pre>
+
+  <h2>5. <code>Option&lt;T&gt;</code>: amikor nem hiba a hiány</h2>
+  <p>Az <code>Option</code> kétféle állapotot ír le: <code>Some(value)</code> vagy <code>None</code>. Például egy nem létező adatbázisrekord gyakran nem szerverhiba.</p>
+  <pre><code>let user = users::find(&amp;db, id).await?;
+let user = user.ok_or(ApiError::NotFound)?;</code></pre>
+  <p>Az első <code>?</code> az adatbázishibát továbbítja. A második sor a normál <code>None</code> értéket tudatosan <code>404 Not Found</code> hibává alakítja.</p>
+
+  <h2>6. Saját hibatípus</h2>
+  <p>Alkalmazásban érdemes egy közös, beszédes hibatípust használni. A <code>thiserror</code> crate leveszi az alap boilerplate-et.</p>
+  <pre><code>use thiserror::Error;
+
+#[derive(Debug, Error)]
+enum ApiError {
+    #[error("{0}")]
+    Bad(String),
+    #[error("unauthorized")]
+    Unauthorized,
+    #[error("not found")]
+    NotFound,
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+}</code></pre>
+  <p>A <code>#[from]</code> miatt egy <code>sqlx::Error</code> automatikusan <code>ApiError::Database</code>-szé alakítható <code>?</code> használatakor.</p>
+
+  <h2>7. Hiba HTTP-válasszá alakítása Axumban</h2>
+  <p>Az Axum <code>IntoResponse</code> traittel dönti el, hogyan legyen egy saját hiba HTTP-válasz.</p>
+  <pre><code>impl IntoResponse for ApiError {
+    fn into_response(self) -&gt; Response {
+        match self {
+            ApiError::Bad(message) =&gt; (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": { "message": message } })),
+            ).into_response(),
+            ApiError::NotFound =&gt; StatusCode::NOT_FOUND.into_response(),
+            _ =&gt; StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    }
+}</code></pre>
+  <p>Így a handler maradhat egyszerű:</p>
+  <pre><code>async fn show(Path(id): Path&lt;i64&gt;) -&gt; Result&lt;Json&lt;User&gt;, ApiError&gt; {
+    let user = users::find(id).await?.ok_or(ApiError::NotFound)?;
+    Ok(Json(user))
+}</code></pre>
+
+  <h2>8. Mikor <code>match</code>, mikor <code>?</code>?</h2>
+  <table>
+    <thead><tr><th>Helyzet</th><th>Eszköz</th></tr></thead>
+    <tbody>
+      <tr><td>A hibát változatlanul továbbadnád</td><td><code>?</code></td></tr>
+      <tr><td>A hibát más hibára vagy HTTP státuszra alakítanád</td><td><code>map_err</code> vagy <code>match</code></td></tr>
+      <tr><td>Siker és hiba esetén eltérő folytatás kell</td><td><code>match</code></td></tr>
+      <tr><td>Hiányzó opcionális érték normális</td><td><code>Option</code>, <code>if let</code></td></tr>
+    </tbody>
+  </table>
+  <pre><code>let user = find_user(id).await.map_err(|error| {
+    tracing::error!(%error, "adatbázis hiba");
+    ApiError::Internal("Adatbázis hiba".into())
+})?;</code></pre>
+
+  <h2>9. <code>unwrap()</code> és <code>expect()</code></h2>
+  <p>Ezek hibánál pánikot okoznak, ezért HTTP request feldolgozásakor általában ne használd őket.</p>
+  <pre><code>// Rossz kérésből szerverpánik lehet:
+let user = users::find(&amp;db, id).await.unwrap();
+
+// Jó: a hiba szabályozott HTTP választ eredményez:
+let user = users::find(&amp;db, id).await?;</code></pre>
+  <div class="note warning"><strong>Kivétel:</strong> <code>unwrap()</code> elfogadható lehet tesztben, vagy bizonyítottan konstans/belső értéknél. Külső inputnál és adatbázisnál ne használd.</div>
+
+  <h2>10. Rövid szabályrendszer</h2>
+  <ol>
+    <li>Várható hiba: <code>Result</code>.</li>
+    <li>Normál hiányzó érték: <code>Option</code>.</li>
+    <li>Egyszerű hibatovábbítás: <code>?</code>.</li>
+    <li>API-ban közös saját hibatípus és <code>IntoResponse</code>.</li>
+    <li>Nyers belső hibát ne küldj a kliensnek; naplózd, a kliensnek adj általános üzenetet.</li>
+  </ol>
+</article></main>
+</body>
+</html>
